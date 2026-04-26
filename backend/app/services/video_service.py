@@ -35,6 +35,19 @@ async def validate_and_save_upload(file: UploadFile) -> tuple[str, Path, int]:
     return file.filename or safe_name, target, size
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def register_synthid_token(asset_id: str, source_hash: str) -> str:
+    token = hashlib.sha256(f"synthid:{asset_id}:{source_hash}".encode()).hexdigest()[:24]
+    return f"synthid-demo-{token}"
+
+
 def extract_keyframes(path: Path, asset_id: str, count: int = 10) -> list[dict]:
     frames = _extract_with_opencv(path, asset_id, count)
     if frames:
@@ -78,6 +91,11 @@ def _extract_with_opencv(path: Path, asset_id: str, count: int) -> list[dict]:
                 "timestamp_ms": int((frame_index / fps) * 1000),
                 "dhash": f"{value:016x}",
                 "evidence_path": str(evidence_path),
+                "semantic_metadata": {
+                    "extraction": "opencv",
+                    "representative_role": "shot midpoint",
+                    "graph_hints": ["broadcast_frame", "scoreboard_candidate", "player_action_candidate"],
+                },
             }
         )
     capture.release()
@@ -104,6 +122,11 @@ def _extract_from_byte_windows(path: Path, asset_id: str, count: int) -> list[di
                 "timestamp_ms": index * 1500,
                 "dhash": dhash_bytes(chunk),
                 "evidence_path": str(evidence_path),
+                "semantic_metadata": {
+                    "extraction": "byte-window-fallback",
+                    "representative_role": "synthetic fingerprint window",
+                    "graph_hints": ["byte_signature", "content_identity"],
+                },
             }
         )
     return frames

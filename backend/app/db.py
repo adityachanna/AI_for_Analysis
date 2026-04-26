@@ -34,11 +34,17 @@ def init_db() -> None:
                 title TEXT NOT NULL,
                 sport TEXT,
                 owner TEXT,
+                owner_uid TEXT NOT NULL DEFAULT 'demo-user',
                 filename TEXT NOT NULL,
                 file_path TEXT NOT NULL,
+                source_hash TEXT NOT NULL DEFAULT '',
+                gcs_uri TEXT,
+                firebase_doc_path TEXT,
                 synthid_token TEXT NOT NULL,
                 ai_summary TEXT NOT NULL,
                 structured_analysis TEXT NOT NULL,
+                vision_analysis TEXT NOT NULL DEFAULT '{}',
+                video_intelligence_analysis TEXT NOT NULL DEFAULT '{}',
                 content_passport TEXT NOT NULL DEFAULT '[]',
                 passport_embedding TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL
@@ -51,6 +57,25 @@ def init_db() -> None:
                 timestamp_ms INTEGER NOT NULL,
                 dhash TEXT NOT NULL,
                 evidence_path TEXT,
+                semantic_metadata TEXT NOT NULL DEFAULT '{}',
+                FOREIGN KEY(asset_id) REFERENCES assets(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS demo_clips (
+                id TEXT PRIMARY KEY,
+                asset_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                url TEXT NOT NULL,
+                mutation_type TEXT NOT NULL,
+                transform_manifest TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                gcs_uri TEXT,
+                dhashes TEXT NOT NULL,
+                semantic_tags TEXT NOT NULL,
+                ai_details TEXT NOT NULL,
+                graph_metadata TEXT NOT NULL,
+                created_at TEXT NOT NULL,
                 FOREIGN KEY(asset_id) REFERENCES assets(id)
             );
 
@@ -116,6 +141,19 @@ def init_db() -> None:
             {
                 "content_passport": "TEXT NOT NULL DEFAULT '[]'",
                 "passport_embedding": "TEXT NOT NULL DEFAULT '[]'",
+                "owner_uid": "TEXT NOT NULL DEFAULT 'demo-user'",
+                "source_hash": "TEXT NOT NULL DEFAULT ''",
+                "gcs_uri": "TEXT",
+                "firebase_doc_path": "TEXT",
+                "vision_analysis": "TEXT NOT NULL DEFAULT '{}'",
+                "video_intelligence_analysis": "TEXT NOT NULL DEFAULT '{}'",
+            },
+        )
+        _ensure_columns(
+            db,
+            "asset_keyframes",
+            {
+                "semantic_metadata": "TEXT NOT NULL DEFAULT '{}'",
             },
         )
         _ensure_columns(

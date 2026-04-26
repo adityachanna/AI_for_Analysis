@@ -6,13 +6,21 @@ class AssetCreateResponse(BaseModel):
     title: str
     sport: str | None = None
     owner: str | None = None
+    owner_uid: str = "demo-user"
     filename: str
+    source_hash: str
+    gcs_uri: str | None = None
+    firebase_doc_path: str | None = None
     synthid_token: str
     ai_summary: str
     structured_analysis: dict
+    vision_analysis: dict = {}
+    video_intelligence_analysis: dict = {}
+    vision_ai_plan: dict = {}
     content_passport: list[dict]
     passport_embedding: list[float]
     keyframes: list[dict]
+    demo_clips: list[dict] = []
     created_at: str
 
 

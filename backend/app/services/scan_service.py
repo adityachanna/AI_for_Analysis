@@ -4,6 +4,8 @@ from uuid import uuid4
 
 from .fingerprint_service import hamming_distance, similarity_from_distance
 from .audit_service import write_stage_audit
+from .demo_clip_service import load_demo_clips
+from .firebase_service import sync_violation_doc
 from .gemini_service import semantic_match
 from .graph_service import upsert_graph_for_violation
 from .mock_suspects import materialize_suspect_hashes
@@ -18,7 +20,7 @@ def run_scan(db, asset_id: str, suspect_url: str | None = None) -> dict:
     keyframes = [dict(row) for row in db.execute("SELECT * FROM asset_keyframes WHERE asset_id = ?", (asset_id,))]
     asset_hashes = [row["dhash"] for row in keyframes]
     asset_analysis = json.loads(asset["structured_analysis"])
-    suspects = materialize_suspect_hashes(asset_hashes)
+    suspects = load_demo_clips(db, asset_id) or materialize_suspect_hashes(asset_hashes)
     if suspect_url:
         suspects.insert(
             0,
@@ -30,6 +32,10 @@ def run_scan(db, asset_id: str, suspect_url: str | None = None) -> dict:
                 "mutation_type": "audio_or_semantic_reuse",
                 "semantic_tags": ["highlight", "broadcast", "rights-managed"],
                 "dhashes": [asset_hashes[0] if asset_hashes else "0"],
+                "graph_metadata": {
+                    "ai_summary": "User submitted URL is treated as semantic/audio reuse until pipeline evidence is computed.",
+                    "distribution_context": {"platform": "Submitted URL"},
+                },
             },
         )
 
@@ -99,6 +105,9 @@ def run_scan(db, asset_id: str, suspect_url: str | None = None) -> dict:
             "embedding_similarity": embedding_similarity,
             "semantic_description_similarity": semantic,
             "audio_transcript_match": audio,
+            "gcs_uri": suspect.get("gcs_uri"),
+            "ai_details": suspect.get("ai_details", {}),
+            "graph_metadata": suspect.get("graph_metadata", {}),
         }
         stages.append(stage_record)
         write_stage_audit(
@@ -158,6 +167,7 @@ def run_scan(db, asset_id: str, suspect_url: str | None = None) -> dict:
                 violation,
             )
             upsert_graph_for_violation(db, asset, violation)
+            sync_violation_doc(violation)
             violations.append(violation)
 
     return {"asset_id": asset_id, "scanned": len(suspects), "stages": stages, "violations": violations}

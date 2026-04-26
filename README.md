@@ -7,8 +7,9 @@ SentinelAI is a local demo for sports media rights protection. A rights holder r
 - Frontend: Next.js app in `frontend/`
 - Backend: FastAPI app in `backend/`
 - AI layer: Gemini / Vertex AI contract through `GEMINI_API_KEY`, with deterministic fallback when the key is absent
-- MVP storage: local filesystem under `backend/data/`
-- MVP database: SQLite at `backend/data/sentinelai.db`
+- Vision layer: optional Cloud Vision API and Video Intelligence API enrichment for keyframe labels, OCR, logos, shots, labels, and transcript evidence
+- Storage: Firebase Storage / GCS when `USE_GCS=true`, otherwise local filesystem under `backend/data/`
+- Database: Firestore sync when Firebase Admin credentials are available, plus SQLite at `backend/data/sentinelai.db` for local demo state
 - Graph: SQLite graph-style `graph_nodes` and `graph_edges`, shaped for a later Neo4j migration
 
 ## Local Setup
@@ -38,7 +39,15 @@ Open `http://localhost:3000`.
 
 Backend:
 
-- `GEMINI_API_KEY`: optional. When set, the backend marks analysis as Gemini-configured. The MVP keeps the external call optional so demos work offline.
+- `GEMINI_API_KEY`: optional. When set, the backend calls the Google Gen AI SDK for content passport text and `gemini-embedding-001` embeddings. Deterministic fallback keeps demos working offline.
+- `GOOGLE_APPLICATION_CREDENTIALS`: optional Firebase Admin service account JSON path for Firebase Auth verification, Firestore writes, and GCS access.
+- `FIREBASE_PROJECT_ID`: default `aditya-12835`.
+- `FIREBASE_STORAGE_BUCKET`: default `aditya-12835.firebasestorage.app`.
+- `FIREBASE_ADMIN_ENABLED`: default `false`. Set `true` on Cloud Run or when local ADC/service-account credentials are available.
+- `FIREBASE_AUTH_REQUIRED`: default `false`. Set `true` in deployment to reject requests without a valid frontend Firebase ID token.
+- `USE_GCS`: default `false`. Set `true` to upload originals and generated demo suspects to the Firebase/GCS bucket.
+- `VISION_AI_ENABLED`: default `false`. Set `true` to call Cloud Vision API on extracted image keyframes.
+- `VIDEO_INTELLIGENCE_ENABLED`: default `false`. Set `true` with `USE_GCS=true` to call Video Intelligence API on the uploaded `gs://` video.
 - `MAX_UPLOAD_MB`: default `50`.
 - `DATABASE_URL`: default `sqlite:///backend/data/sentinelai.db`.
 
@@ -54,24 +63,37 @@ Frontend:
 - `GET /api/assets/{asset_id}`
 - `POST /api/assets/{asset_id}/scan`
 - `GET /api/assets/{asset_id}/violations`
+- `POST /api/assets/{asset_id}/demo-clips`
+- `GET /api/assets/{asset_id}/demo-clips`
 - `GET /api/violations/{violation_id}`
 - `GET /api/graph/{asset_id}`
 - `GET /api/audit`
 - `GET /api/audit/{asset_id}`
+- `GET /api/vision-ai/capabilities`
 
 ## Detection Cascade
 
-Registration saves the uploaded video, extracts 8-12 keyframes when OpenCV is available, or falls back to deterministic byte-window fingerprints when it is not. Each keyframe gets a 64-bit dHash, a simulated SynthID token, transcript placeholder, structured media summary, and a Gemini Content Passport. The passport is a scene-by-scene semantic reference designed to survive re-encoding, cropping, overlays, color changes, and screen recapture.
+Registration now follows the demo pipeline order: compute the source SHA-256 hash, register a simulated SynthID token, extract 8-12 keyframes, compute dHash fingerprints, enrich keyframes/video with Vision AI evidence, generate a Gemini Content Passport plus embedding, sync the asset to Firestore when credentials exist, upload to GCS/Firebase Storage when enabled, and create five transformed demo candidates. The response includes `vision_ai_plan`, which explains selected Google Vision products, enabled backend flags, billable-unit estimates, and estimated registration cost.
 
-Scanning uses seeded mock suspects:
+SentinelAI uses Google Cloud computer vision products by fit:
+
+- Cloud Vision API: keyframe labels, OCR, logo hints, and object hints.
+- Video Intelligence API: shot/video labels, text, logo recognition, and transcript evidence.
+- Gemini on Vertex AI / Gemini API: Content Passport, semantic reasoning, and mutation explanation.
+- Vertex AI Vision: documented upgrade path for continuous stream ingestion and Vision Warehouse search.
+- Document AI: future path for contracts, takedown notices, and rights documents.
+
+The backend creates five demo suspect clips for every registered asset:
 
 - exact repost
-- cropped/reencoded repost
+- 480p re-encode
+- 10% crop plus color grade
 - overlay/meme edit
 - screen-recorded recapture
-- unrelated sports clip
 
-Stage A checks simulated SynthID continuity plus dHash distance. Stage B compares semantic tags and structured descriptions. Stage C runs Gemini-style explanation and classification for edited or uncertain cases. Confirmed and probable matches are written to `violations` and connected in the graph tables.
+Each generated clip has deterministic transformed bytes, a mutation manifest, a GCS/local URI, dHashes at different distances, Gemini/fallback semantic details, and graph metadata for entities, OCR/logo/label evidence, mutation evidence, distribution context, and graph edges.
+
+Stage A checks simulated SynthID continuity plus dHash distance. Stage B compares semantic tags and structured descriptions. Stage C runs Gemini semantic/audio-style explanation and classification for edited or uncertain cases. Confirmed and probable matches are written to `violations`, optionally synced to Firestore, and connected in the graph tables.
 
 Every stage decision is also written to a local append-only `audit_log` table with the same shape intended for BigQuery: `stage_id`, `timestamp`, `video_hash`, `similarity_score`, `decision`, `estimated_cost_usd`, `matched_asset_id`, and `suspect_id`. The dashboard displays total decisions and estimated cost-per-detection from this audit log.
 

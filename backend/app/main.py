@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import ensure_data_dirs, settings
 from .db import init_db
-from .routes import assets, audit, graph, violations
+from .routes import assets, audit, graph, violations, vision_ai
 
 
 def create_app() -> FastAPI:
@@ -26,6 +26,7 @@ def create_app() -> FastAPI:
     app.include_router(violations.router)
     app.include_router(graph.router)
     app.include_router(audit.router)
+    app.include_router(vision_ai.router)
     return app
 
 
