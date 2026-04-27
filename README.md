@@ -1,61 +1,117 @@
-# SentinelAI MVP
+# SentinelAI (AI_for_Analysis)
 
-SentinelAI is a local demo for sports media rights protection. A rights holder registers an official video, the backend extracts keyframe fingerprints, and the app scans seeded mock platform results through a cost-ordered detection cascade.
+SentinelAI is an MVP for **sports media rights protection**.
 
-## Stack
+A rights holder registers an official video. The backend extracts **keyframes + perceptual fingerprints**, generates a controlled set of **mutated “suspect” clips**, and runs a **multi-stage detection cascade** to flag likely reposts/edits. Results are presented in a Next.js UI with evidence, audit logs, and a simple graph model (nodes/edges) to support future expansion.
 
-- Frontend: Next.js app in `frontend/`
-- Backend: FastAPI app in `backend/`
-- AI layer: Gemini / Vertex AI contract through `GEMINI_API_KEY`, with deterministic fallback when the key is absent
-- Vision layer: optional Cloud Vision API and Video Intelligence API enrichment for keyframe labels, OCR, logos, shots, labels, and transcript evidence
-- Storage: Firebase Storage / GCS when `USE_GCS=true`, otherwise local filesystem under `backend/data/`
-- Database: Firestore sync when Firebase Admin credentials are available, plus SQLite at `backend/data/sentinelai.db` for local demo state
-- Graph: SQLite graph-style `graph_nodes` and `graph_edges`, shaped for a later Neo4j migration
+> This repository contains both the **frontend (Next.js)** and **backend (FastAPI)**, plus optional integrations with **Gemini/Vertex AI**, **Cloud Vision**, **Video Intelligence**, and **Firebase/GCS**.
 
-## Local Setup
+---
 
-Backend:
+## Live demo (Cloud Run)
 
-```powershell
-cd sentinelai\backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-```
+These deployments are **not local-only**; the demo is deployed on Google Cloud Run:
 
-Frontend:
+- **Frontend (Cloud Run):** https://sentinelai-frontend-zexgzh6owq-uc.a.run.app/
+- **Backend (Cloud Run):** https://sentinelai-backend-1009519954306.us-central1.run.app/
 
-```powershell
-cd sentinelai\frontend
-npm install
-$env:NEXT_PUBLIC_API_BASE_URL="http://127.0.0.1:8000"
-npm run dev
-```
+### Quick check
 
-Open `http://localhost:3000`.
+- Backend health: `GET https://sentinelai-backend-1009519954306.us-central1.run.app/health`
 
-## Environment Variables
+---
 
-Backend:
+## What this MVP demonstrates
 
-- `GEMINI_API_KEY`: optional. When set, the backend calls the Google Gen AI SDK for content passport text and `gemini-embedding-001` embeddings. Deterministic fallback keeps demos working offline.
-- `GOOGLE_APPLICATION_CREDENTIALS`: optional Firebase Admin service account JSON path for Firebase Auth verification, Firestore writes, and GCS access.
-- `FIREBASE_PROJECT_ID`: default `aditya-12835`.
-- `FIREBASE_STORAGE_BUCKET`: default `aditya-12835.firebasestorage.app`.
-- `FIREBASE_ADMIN_ENABLED`: default `false`. Set `true` on Cloud Run or when local ADC/service-account credentials are available.
-- `FIREBASE_AUTH_REQUIRED`: default `false`. Set `true` in deployment to reject requests without a valid frontend Firebase ID token.
-- `USE_GCS`: default `false`. Set `true` to upload originals and generated demo suspects to the Firebase/GCS bucket.
-- `VISION_AI_ENABLED`: default `false`. Set `true` to call Cloud Vision API on extracted image keyframes.
-- `VIDEO_INTELLIGENCE_ENABLED`: default `false`. Set `true` with `USE_GCS=true` to call Video Intelligence API on the uploaded `gs://` video.
-- `MAX_UPLOAD_MB`: default `50`.
-- `DATABASE_URL`: default `sqlite:///backend/data/sentinelai.db`.
+### 1) Registration pipeline (official asset)
+When an official video is registered, SentinelAI:
 
-Frontend:
+1. Computes a **SHA-256** hash for identity and deduplication.
+2. Registers a **simulated SynthID token** (demo placeholder for provenance/watermark continuity).
+3. Extracts **~8–12 keyframes**.
+4. Computes **dHash perceptual fingerprints** for keyframes.
+5. Optionally enriches visual evidence via:
+   - **Cloud Vision API** (labels, OCR, logos, objects)
+   - **Video Intelligence API** (shots, text, logos, transcript)
+6. Generates structured metadata:
+   - With **Gemini** when `GEMINI_API_KEY` is set
+   - With a **deterministic fallback** when it is not
 
-- `NEXT_PUBLIC_API_BASE_URL`: default `http://127.0.0.1:8000`.
+### 2) Seeded suspect clips (controlled “platform” results)
+For each registered asset, the backend generates five deterministic demo clips that represent common infringement patterns:
 
-## API
+- Exact repost
+- 480p re-encode
+- ~10% crop + color grade
+- Overlay / meme edit
+- Screen-recorded recapture
+
+Each clip includes:
+
+- A mutation manifest
+- Local or GCS/Firebase Storage URI
+- Fingerprints at different distances
+- AI-generated (or fallback) semantic details
+- Graph metadata for relationships and evidence
+
+### 3) Detection cascade
+Scanning uses a staged cascade:
+
+- **Stage A:** SynthID continuity (simulated) + dHash distance
+- **Stage B:** Semantic tag / structured metadata comparisons
+- **Stage C:** Gemini reasoning (or fallback) for mutation explanation + classification
+
+Every stage writes an append-only record to `audit_log` (SQLite) with a schema shaped for a later BigQuery pipeline.
+
+---
+
+## Repository layout
+
+> The project lives under the `sentinelai/` directory.
+
+- `sentinelai/frontend/` — Next.js (TypeScript) UI
+- `sentinelai/backend/` — FastAPI (Python) API
+- `sentinelai/backend/data/` — local demo storage (SQLite DB, generated clips, keyframes)
+
+---
+
+## Tech stack
+
+- **Frontend:** Next.js + TypeScript
+- **Backend:** FastAPI
+- **AI layer:** Gemini / Vertex AI via `GEMINI_API_KEY` with deterministic offline fallback
+- **Vision enrichment (optional):** Cloud Vision API + Video Intelligence API
+- **Storage:** Firebase Storage / GCS when `USE_GCS=true`, else local filesystem
+- **Database:** SQLite for demo state; optional Firestore sync when Admin credentials are available
+- **Graph model:** SQLite `graph_nodes` / `graph_edges` (designed for later Neo4j migration)
+
+---
+
+## Using the deployed demo
+
+1. Open the **frontend**:
+   - https://sentinelai-frontend-zexgzh6owq-uc.a.run.app/
+2. Upload an official sports highlight video (≤ `MAX_UPLOAD_MB`, default 50MB).
+3. Review:
+   - Extracted keyframes
+   - Fingerprints (dHash)
+   - Content passport summary (Gemini or fallback)
+4. Run a scan for suspected reposts/edits.
+5. Inspect violations:
+   - Evidence timeline
+   - Stage A/B/C decisions
+   - Confidence breakdown
+   - Graph relationships
+
+---
+
+## API (backend)
+
+Base URL (deployed):
+
+- `https://sentinelai-backend-1009519954306.us-central1.run.app`
+
+Endpoints:
 
 - `GET /health`
 - `POST /api/assets/register`
@@ -71,47 +127,73 @@ Frontend:
 - `GET /api/audit/{asset_id}`
 - `GET /api/vision-ai/capabilities`
 
-## Detection Cascade
+---
 
-Registration now follows the demo pipeline order: compute the source SHA-256 hash, register a simulated SynthID token, extract 8-12 keyframes, compute dHash fingerprints, enrich keyframes/video with Vision AI evidence, generate a Gemini Content Passport plus embedding, sync the asset to Firestore when credentials exist, upload to GCS/Firebase Storage when enabled, and create five transformed demo candidates. The response includes `vision_ai_plan`, which explains selected Google Vision products, enabled backend flags, billable-unit estimates, and estimated registration cost.
+## Local development
 
-SentinelAI uses Google Cloud computer vision products by fit:
+### Backend (FastAPI)
 
-- Cloud Vision API: keyframe labels, OCR, logo hints, and object hints.
-- Video Intelligence API: shot/video labels, text, logo recognition, and transcript evidence.
-- Gemini on Vertex AI / Gemini API: Content Passport, semantic reasoning, and mutation explanation.
-- Vertex AI Vision: documented upgrade path for continuous stream ingestion and Vision Warehouse search.
-- Document AI: future path for contracts, takedown notices, and rights documents.
+```powershell
+cd sentinelai\backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
 
-The backend creates five demo suspect clips for every registered asset:
+### Frontend (Next.js)
 
-- exact repost
-- 480p re-encode
-- 10% crop plus color grade
-- overlay/meme edit
-- screen-recorded recapture
+```powershell
+cd sentinelai\frontend
+npm install
+$env:NEXT_PUBLIC_API_BASE_URL="http://127.0.0.1:8000"
+npm run dev
+```
 
-Each generated clip has deterministic transformed bytes, a mutation manifest, a GCS/local URI, dHashes at different distances, Gemini/fallback semantic details, and graph metadata for entities, OCR/logo/label evidence, mutation evidence, distribution context, and graph edges.
+Open http://localhost:3000.
 
-Stage A checks simulated SynthID continuity plus dHash distance. Stage B compares semantic tags and structured descriptions. Stage C runs Gemini semantic/audio-style explanation and classification for edited or uncertain cases. Confirmed and probable matches are written to `violations`, optionally synced to Firestore, and connected in the graph tables.
+---
 
-Every stage decision is also written to a local append-only `audit_log` table with the same shape intended for BigQuery: `stage_id`, `timestamp`, `video_hash`, `similarity_score`, `decision`, `estimated_cost_usd`, `matched_asset_id`, and `suspect_id`. The dashboard displays total decisions and estimated cost-per-detection from this audit log.
+## Configuration
 
-## Demo Script
+### Backend environment variables
 
-1. Start the backend and frontend.
-2. Upload an official sports highlight under 50MB.
-3. Review the generated fingerprints, SynthID demo token, and AI summary.
-4. Open the asset workspace and click `Run cascade scan`.
-5. Confirm that the timeline shows Stage A, Stage B, and Stage C decisions.
-6. Open a violation report and review confidence breakdown plus propagation graph.
+- `GEMINI_API_KEY` (optional)
+  - When set, calls Gemini for content passport text + embeddings.
+  - When absent, a deterministic fallback keeps the demo working offline.
+- `GOOGLE_APPLICATION_CREDENTIALS` (optional)
+  - Firebase Admin service-account JSON path for Firebase Auth verification, Firestore writes, and GCS access.
+- `FIREBASE_PROJECT_ID` (default: `aditya-12835`)
+- `FIREBASE_STORAGE_BUCKET` (default: `aditya-12835.firebasestorage.app`)
+- `FIREBASE_ADMIN_ENABLED` (default: `false`)
+  - Set `true` on Cloud Run or when local ADC/service-account credentials are available.
+- `FIREBASE_AUTH_REQUIRED` (default: `false`)
+  - Set `true` in deployment to reject requests without a valid frontend Firebase ID token.
+- `USE_GCS` (default: `false`)
+  - Set `true` to upload originals and generated demo suspects to Firebase/GCS.
+- `VISION_AI_ENABLED` (default: `false`)
+  - Set `true` to call Cloud Vision API on extracted keyframes.
+- `VIDEO_INTELLIGENCE_ENABLED` (default: `false`)
+  - Set `true` with `USE_GCS=true` to call Video Intelligence API on the uploaded `gs://` video.
+- `MAX_UPLOAD_MB` (default: `50`)
+- `DATABASE_URL` (default: `sqlite:///backend/data/sentinelai.db`)
 
-The MVP should complete the local demo in under three minutes once dependencies are installed.
+### Frontend environment variables
 
-## Upgrade Path
+- `NEXT_PUBLIC_API_BASE_URL` (default: `http://127.0.0.1:8000`)
 
-- Replace mock platform data with crawler or partner ingestion jobs.
-- Replace simulated SynthID with official marker APIs where available.
-- Move SQLite to Cloud SQL or AlloyDB.
-- Move graph tables to Neo4j using the same node and edge types.
-- Deploy backend to Cloud Run and frontend to Vercel or Firebase Hosting.
+---
+
+## Notes / roadmap
+
+- Replace the seeded demo platform results with real ingestion (crawler, partner feeds, platform APIs).
+- Replace the simulated SynthID token with official provenance/marker APIs when available.
+- Move SQLite → Cloud SQL / AlloyDB.
+- Move `graph_nodes` / `graph_edges` → Neo4j.
+- Keep Cloud Run for backend and optionally move frontend to Vercel / Firebase Hosting.
+
+---
+
+## License
+
+Add a license file if you intend to open-source this project.
