@@ -39,3 +39,4 @@ class GraphResponse(BaseModel):
     asset_id: str
     nodes: list[dict]
     edges: list[dict]
+    gemini_analysis: dict = {}

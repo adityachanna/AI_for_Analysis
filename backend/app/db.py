@@ -1,9 +1,14 @@
+import logging
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
 from .config import DATA_DIR, ensure_data_dirs, settings
+
+logger = logging.getLogger(__name__)
+
+_GCS_DB_OBJECT = "sentinelai-db/sentinelai.db"
 
 
 def _db_path() -> Path:
@@ -12,20 +17,56 @@ def _db_path() -> Path:
     return DATA_DIR / "sentinelai.db"
 
 
+def _restore_db_from_gcs() -> None:
+    if not settings.use_gcs:
+        return
+    db_path = _db_path()
+    if db_path.exists() and db_path.stat().st_size > 0:
+        return  # already have a local DB (same instance, not a cold start)
+    try:
+        from google.cloud import storage
+        client = storage.Client(project=settings.google_cloud_project)
+        bucket = client.bucket(settings.gcs_bucket_name)
+        blob = bucket.blob(_GCS_DB_OBJECT)
+        if blob.exists():
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            blob.download_to_filename(str(db_path))
+            logger.info("DB restored from GCS (%d bytes)", db_path.stat().st_size)
+    except Exception as exc:
+        logger.warning("DB restore from GCS skipped: %s", exc)
+
+
+def _backup_db_to_gcs() -> None:
+    if not settings.use_gcs:
+        return
+    try:
+        from google.cloud import storage
+        client = storage.Client(project=settings.google_cloud_project)
+        bucket = client.bucket(settings.gcs_bucket_name)
+        blob = bucket.blob(_GCS_DB_OBJECT)
+        blob.upload_from_filename(str(_db_path()))
+    except Exception as exc:
+        logger.warning("DB backup to GCS failed: %s", exc)
+
+
 @contextmanager
 def get_db() -> Iterator[sqlite3.Connection]:
     ensure_data_dirs()
-    conn = sqlite3.connect(_db_path())
+    db_path = _db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
         conn.commit()
+        _backup_db_to_gcs()
     finally:
         conn.close()
 
 
 def init_db() -> None:
     ensure_data_dirs()
+    _restore_db_from_gcs()
     with get_db() as db:
         db.executescript(
             """
@@ -115,23 +156,6 @@ def init_db() -> None:
                 matched_asset_id TEXT NOT NULL,
                 suspect_id TEXT NOT NULL,
                 details TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS graph_nodes (
-                id TEXT PRIMARY KEY,
-                asset_id TEXT NOT NULL,
-                label TEXT NOT NULL,
-                type TEXT NOT NULL,
-                metadata TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS graph_edges (
-                id TEXT PRIMARY KEY,
-                asset_id TEXT NOT NULL,
-                source TEXT NOT NULL,
-                target TEXT NOT NULL,
-                relation TEXT NOT NULL,
-                weight REAL NOT NULL
             );
             """
         )

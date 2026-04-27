@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import shutil
 from pathlib import Path
 from uuid import uuid4
@@ -8,6 +9,7 @@ from fastapi import HTTPException, UploadFile
 from ..config import EVIDENCE_DIR, UPLOAD_DIR, settings
 from .fingerprint_service import dhash_bytes
 
+logger = logging.getLogger(__name__)
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".m4v"}
 
@@ -43,11 +45,6 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def register_synthid_token(asset_id: str, source_hash: str) -> str:
-    token = hashlib.sha256(f"synthid:{asset_id}:{source_hash}".encode()).hexdigest()[:24]
-    return f"synthid-demo-{token}"
-
-
 def extract_keyframes(path: Path, asset_id: str, count: int = 10) -> list[dict]:
     frames = _extract_with_opencv(path, asset_id, count)
     if frames:
@@ -58,8 +55,26 @@ def extract_keyframes(path: Path, asset_id: str, count: int = 10) -> list[dict]:
 def _extract_with_opencv(path: Path, asset_id: str, count: int) -> list[dict]:
     try:
         import cv2  # type: ignore
-    except Exception:
+    except ImportError:
         return []
+
+    frame_dir = EVIDENCE_DIR / asset_id
+    frame_dir.mkdir(parents=True, exist_ok=True)
+
+    # Try PySceneDetect ContentDetector for scene-boundary keyframes
+    scene_frames: list[int] = []
+    try:
+        from scenedetect import detect, ContentDetector  # type: ignore
+
+        scene_list = detect(str(path), ContentDetector(threshold=27.0))
+        for start_tc, end_tc in scene_list:
+            mid = (start_tc.get_frames() + end_tc.get_frames()) // 2
+            scene_frames.append(mid)
+        logger.debug(f"PySceneDetect found {len(scene_list)} scenes in {path.name}")
+    except ImportError:
+        logger.debug("scenedetect not available; falling back to evenly-spaced frames.")
+    except Exception as e:
+        logger.warning(f"PySceneDetect failed for {path.name}: {e}")
 
     capture = cv2.VideoCapture(str(path))
     total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
@@ -68,11 +83,22 @@ def _extract_with_opencv(path: Path, asset_id: str, count: int) -> list[dict]:
         capture.release()
         return []
 
-    indices = [int(i * max(total - 1, 1) / max(count - 1, 1)) for i in range(count)]
+    # Fill to `count` with evenly-spaced frames when scene detection yields too few
+    evenly_spaced = [int(i * max(total - 1, 1) / max(count - 1, 1)) for i in range(count)]
+    if len(scene_frames) < count:
+        existing = set(scene_frames)
+        for idx in evenly_spaced:
+            if idx not in existing:
+                scene_frames.append(idx)
+                existing.add(idx)
+            if len(scene_frames) >= count:
+                break
+    scene_frames.sort()
+    selected = scene_frames[:count]
+    scene_frame_set = set(scene_frames[:len(scene_list)] if 'scene_list' in dir() else [])  # noqa: F821
+
     frames = []
-    frame_dir = EVIDENCE_DIR / asset_id
-    frame_dir.mkdir(parents=True, exist_ok=True)
-    for out_index, frame_index in enumerate(indices):
+    for out_index, frame_index in enumerate(selected):
         capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
         ok, frame = capture.read()
         if not ok:
@@ -85,6 +111,7 @@ def _extract_with_opencv(path: Path, asset_id: str, count: int) -> list[dict]:
             value = (value << 1) | int(bit)
         evidence_path = frame_dir / f"frame_{out_index:02d}.jpg"
         cv2.imwrite(str(evidence_path), frame)
+        extraction = "scenedetect-content" if frame_index in scene_frame_set else "evenly-spaced"
         frames.append(
             {
                 "frame_index": out_index,
@@ -92,8 +119,8 @@ def _extract_with_opencv(path: Path, asset_id: str, count: int) -> list[dict]:
                 "dhash": f"{value:016x}",
                 "evidence_path": str(evidence_path),
                 "semantic_metadata": {
-                    "extraction": "opencv",
-                    "representative_role": "shot midpoint",
+                    "extraction": extraction,
+                    "representative_role": "scene midpoint" if extraction == "scenedetect-content" else "shot midpoint",
                     "graph_hints": ["broadcast_frame", "scoreboard_candidate", "player_action_candidate"],
                 },
             }

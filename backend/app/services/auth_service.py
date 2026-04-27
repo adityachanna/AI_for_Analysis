@@ -34,8 +34,8 @@ def _init_firebase_admin() -> bool:
 
     options = {"projectId": settings.firebase_project_id, "storageBucket": settings.firebase_storage_bucket}
     try:
-        if settings.firebase_credentials:
-            firebase_admin.initialize_app(credentials.Certificate(settings.firebase_credentials), options)
+        if settings.firebase_admin_creds:
+            firebase_admin.initialize_app(credentials.Certificate(settings.firebase_admin_creds), options)
         else:
             firebase_admin.initialize_app(options=options)
         _firebase_initialized = True

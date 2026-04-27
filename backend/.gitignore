@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+.env
+
+# Credential files
+*adminsdk*.json
+*service-account*.json
+
+# Local data / scratch
+data/

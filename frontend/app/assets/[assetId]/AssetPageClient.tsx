@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api, Asset, AuditSummary, DemoClip, GraphData, GraphEdge, GraphNode, ScanResult, Violation } from "@/lib/api";
 import { ConfidenceBars } from "@/components/ConfidenceBars";
@@ -31,9 +30,7 @@ function PipelineStep({ num, label, done }: { num: string; label: string; done?:
   );
 }
 
-export default function AssetPage() {
-  const params = useParams<{ assetId: string }>();
-  const assetId = params?.assetId;
+export default function AssetPage({ params }: { params: { assetId: string } }) {
   const [asset, setAsset] = useState<Asset | null>(null);
   const [violations, setViolations] = useState<Violation[]>([]);
   const [graph, setGraph] = useState<GraphData | null>(null);
@@ -46,15 +43,11 @@ export default function AssetPage() {
   const [activeTab, setActiveTab] = useState<'scan' | 'clips' | 'passport' | 'graph'>('clips');
 
   useEffect(() => {
-    if (!assetId) {
-      return;
-    }
-
     Promise.all([
-      api.asset(assetId),
-      api.violations(assetId),
-      api.graph(assetId),
-      api.audit(assetId),
+      api.asset(params.assetId),
+      api.violations(params.assetId),
+      api.graph(params.assetId),
+      api.audit(params.assetId),
     ])
       .then(([assetData, violationData, graphData, auditData]) => {
         setAsset(assetData);
@@ -64,7 +57,7 @@ export default function AssetPage() {
         setDemoClips(assetData.demo_clips || []);
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Unable to load asset"));
-  }, [assetId]);
+  }, [params.assetId]);
 
   const SCAN_STEPS = [
     "Stage A — dHash Hamming Distance",
@@ -79,17 +72,13 @@ export default function AssetPage() {
       setScanStep((s) => (s < SCAN_STEPS.length - 1 ? s + 1 : s));
     }, 2200);
     try {
-      if (!assetId) {
-        throw new Error("Asset id is unavailable");
-      }
-
-      const result = await api.scan(assetId);
+      const result = await api.scan(params.assetId);
       clearInterval(stepInterval);
       setScan(result);
       const [newViolations, newGraph, newAudit] = await Promise.all([
-        api.violations(assetId),
-        api.graph(assetId),
-        api.audit(assetId),
+        api.violations(params.assetId),
+        api.graph(params.assetId),
+        api.audit(params.assetId),
       ]);
       setViolations(newViolations);
       setGraph(newGraph);

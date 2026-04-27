@@ -1,14 +1,17 @@
-import hashlib
 import json
+import logging
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import SUSPECT_DIR, settings
-from .cloud_storage_service import upload_to_bucket
 from .firebase_service import sync_demo_clip_doc
 from .fingerprint_service import hamming_distance
-from .gemini_service import analyze_demo_clip
+from .gemini_service import describe_clip_from_keyframes
+from .gcs_service import upload_to_gcs
+from .video_service import extract_keyframes
 
+logger = logging.getLogger(__name__)
 
 DEMO_VARIANTS = [
     {
@@ -16,7 +19,6 @@ DEMO_VARIANTS = [
         "platform": "YouTube Shorts",
         "title": "Same highlight reposted from the master feed",
         "mutation_type": "exact_repost",
-        "hash_distance": 3,
         "filters": ["copy", "metadata_strip"],
     },
     {
@@ -24,7 +26,6 @@ DEMO_VARIANTS = [
         "platform": "TikTok",
         "title": "480p re-encode with compression loss",
         "mutation_type": "cropped_or_reencoded",
-        "hash_distance": 14,
         "filters": ["scale_480p", "h264_reencode", "color_shift"],
     },
     {
@@ -32,7 +33,6 @@ DEMO_VARIANTS = [
         "platform": "Instagram Reels",
         "title": "Vertical crop plus boosted color grade",
         "mutation_type": "cropped_or_reencoded",
-        "hash_distance": 18,
         "filters": ["crop_10_percent", "vertical_canvas", "saturation_boost"],
     },
     {
@@ -40,7 +40,6 @@ DEMO_VARIANTS = [
         "platform": "Facebook Watch",
         "title": "Meme overlay on top of licensed sports footage",
         "mutation_type": "overlay_or_meme_edit",
-        "hash_distance": 24,
         "filters": ["caption_overlay", "sticker_overlay", "music_bed"],
     },
     {
@@ -48,7 +47,6 @@ DEMO_VARIANTS = [
         "platform": "X",
         "title": "Screen-recorded TV playback of the same play",
         "mutation_type": "screen_recorded_recapture",
-        "hash_distance": 29,
         "filters": ["obs_screen_record", "720p_capture", "glare", "room_audio"],
     },
 ]
@@ -56,25 +54,38 @@ DEMO_VARIANTS = [
 
 def create_demo_clips_for_asset(db, asset: dict, keyframes: list[dict], analysis: dict) -> list[dict]:
     source = Path(asset["file_path"])
-    source_bytes = source.read_bytes() if source.exists() else asset["source_hash"].encode()
-    base_hash = keyframes[0]["dhash"] if keyframes else "0000000000000000"
     variants = DEMO_VARIANTS[: settings.demo_variant_count]
+    base_hash = keyframes[0]["dhash"] if keyframes else "0000000000000000"
     clips = []
 
-    for index, variant in enumerate(variants):
+    for variant in variants:
         clip_id = f"{asset['id']}-{variant['id']}"
         manifest = {
             "filters": variant["filters"],
             "source_asset_id": asset["id"],
-            "demo_note": "Local MVP transforms bytes deterministically; production uses FFmpeg/OpenCV workers.",
         }
-        clip_path = _write_variant_file(asset["id"], variant["id"], source.suffix or ".mp4", source_bytes, manifest)
-        dhashes = [_flip_bits(base_hash, variant["hash_distance"])]
-        ai_details = analyze_demo_clip(analysis, variant["mutation_type"], variant["platform"], manifest)
-        upload = upload_to_bucket(
-            clip_path,
-            f"sentinelai-demo/{asset['owner_uid']}/{asset['id']}/suspects/{variant['id']}{clip_path.suffix}",
+
+        # Build variant video using real OpenCV frame-level transforms
+        clip_path = _build_variant_path(asset["id"], variant["id"], source.suffix or ".mp4")
+        clip_path = _create_variant_video(source, clip_path, variant["id"])
+
+        # Extract real keyframes and dhashes from the variant file
+        variant_kf_id = f"{asset['id']}-{variant['id']}-kf"
+        variant_keyframes = extract_keyframes(clip_path, variant_kf_id, count=5)
+        dhashes = [kf["dhash"] for kf in variant_keyframes] if variant_keyframes else [base_hash]
+
+        # Get AI description based on real keyframe data
+        ai_details = describe_clip_from_keyframes(
+            variant_keyframes or keyframes,
+            analysis,
+            variant["mutation_type"],
+            variant["platform"],
         )
+
+        # Upload variant to GCS
+        gcs_dest = f"sentinelai-demo/{asset['owner_uid']}/{asset['id']}/suspects/{variant['id']}{clip_path.suffix}"
+        upload = upload_to_gcs(clip_path, gcs_dest)
+
         created_at = datetime.now(timezone.utc).isoformat()
         clip = {
             "id": clip_id,
@@ -136,18 +147,144 @@ def load_demo_clips(db, asset_id: str) -> list[dict]:
     return clips
 
 
-def _write_variant_file(asset_id: str, variant_id: str, suffix: str, source_bytes: bytes, manifest: dict) -> Path:
+def _build_variant_path(asset_id: str, variant_id: str, suffix: str) -> Path:
     target_dir = SUSPECT_DIR / asset_id
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / f"{variant_id}{suffix}"
-    marker = json.dumps(manifest, sort_keys=True).encode()
-    digest = hashlib.sha256(source_bytes + marker).digest()
-    target.write_bytes(source_bytes + b"\nSENTINELAI_DEMO_VARIANT\n" + marker + b"\n" + digest)
-    return target
+    return target_dir / f"{variant_id}{suffix}"
 
 
-def _flip_bits(hex_value: str, count: int) -> str:
-    value = int(hex_value, 16)
-    for bit in range(min(count, 64)):
-        value ^= 1 << bit
-    return f"{value:016x}"
+def _create_variant_video(source_path: Path, target_path: Path, variant_id: str) -> Path:
+    """Apply OpenCV frame-level transform to produce a variant video. Falls back to file copy on failure."""
+    try:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+    except ImportError:
+        logger.warning("OpenCV/numpy not available; copying source as variant.")
+        shutil.copy(source_path, target_path)
+        return target_path
+
+    if not source_path.exists() or source_path.stat().st_size == 0:
+        if source_path.exists():
+            shutil.copy(source_path, target_path)
+        else:
+            target_path.write_bytes(b"")
+        return target_path
+
+    cap = cv2.VideoCapture(str(source_path))
+    if not cap.isOpened():
+        logger.warning(f"Cannot open {source_path} with OpenCV; copying as-is.")
+        shutil.copy(source_path, target_path)
+        return target_path
+
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+
+    if width <= 0 or height <= 0:
+        cap.release()
+        shutil.copy(source_path, target_path)
+        return target_path
+
+    out_width, out_height = _variant_output_size(variant_id, width, height)
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(str(target_path), fourcc, fps, (out_width, out_height))
+
+    if not out.isOpened():
+        logger.warning(f"VideoWriter could not open for {variant_id}; copying source.")
+        cap.release()
+        shutil.copy(source_path, target_path)
+        return target_path
+
+    rng = np.random.default_rng(42)
+    frame_idx = 0
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        transformed = _apply_variant_transform(frame, variant_id, out_width, out_height, frame_idx, rng)
+        out.write(transformed)
+        frame_idx += 1
+
+    cap.release()
+    out.release()
+
+    # If the writer produced a trivially small file the codec probably silently failed
+    if not target_path.exists() or target_path.stat().st_size < 1024:
+        logger.warning(f"Variant output for {variant_id} is empty; copying source.")
+        shutil.copy(source_path, target_path)
+
+    return target_path
+
+
+def _variant_output_size(variant_id: str, width: int, height: int) -> tuple[int, int]:
+    if variant_id == "demo-480p-reencode" and height > 480:
+        h = 480
+        w = int(width * h / height)
+        w += w % 2  # ensure even for codec compatibility
+        return (w, h)
+    if variant_id == "demo-crop-color":
+        w = int(width * 0.8)
+        h = int(height * 0.8)
+        w += w % 2
+        h += h % 2
+        return (max(w, 2), max(h, 2))
+    return (width, height)
+
+
+def _apply_variant_transform(
+    frame: "np.ndarray",
+    variant_id: str,
+    out_w: int,
+    out_h: int,
+    frame_idx: int,
+    rng: "np.random.Generator",
+) -> "np.ndarray":
+    import cv2  # type: ignore
+    import numpy as np  # type: ignore
+
+    if variant_id == "demo-exact-repost":
+        # No-op: copy frames losslessly — expected dhash distance 0–3
+        return frame
+
+    if variant_id == "demo-480p-reencode":
+        # Resize to 480p — expected dhash distance 10–18
+        return cv2.resize(frame, (out_w, out_h))
+
+    if variant_id == "demo-crop-color":
+        # Crop 10% borders + boost saturation 1.4× — expected dhash distance 16–22
+        h, w = frame.shape[:2]
+        x0 = int(w * 0.1)
+        y0 = int(h * 0.1)
+        cropped = frame[y0 : y0 + out_h, x0 : x0 + out_w]
+        if cropped.shape[0] < out_h or cropped.shape[1] < out_w:
+            cropped = cv2.resize(frame, (out_w, out_h))
+        hsv = cv2.cvtColor(cropped, cv2.COLOR_BGR2HSV).astype(np.float32)
+        hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.4, 0, 255)
+        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    if variant_id == "demo-overlay-meme":
+        # Caption bar at bottom — expected dhash distance 20–28
+        result = frame.copy()
+        h, w = result.shape[:2]
+        bar_h = max(40, h // 8)
+        cv2.rectangle(result, (0, h - bar_h), (w, h), (0, 0, 0), -1)
+        cv2.putText(
+            result,
+            "EPIC SPORTS MOMENT LOL",
+            (10, h - bar_h // 3),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+        )
+        return result
+
+    if variant_id == "demo-screen-record":
+        # Gaussian noise + brightness reduction 15% — expected dhash distance 24–32
+        noise = rng.integers(-20, 20, frame.shape, dtype=np.int16)
+        noisy = np.clip(frame.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        hsv = cv2.cvtColor(noisy, cv2.COLOR_BGR2HSV).astype(np.float32)
+        hsv[:, :, 2] = np.clip(hsv[:, :, 2] * 0.85, 0, 255)
+        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    return frame

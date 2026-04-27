@@ -8,12 +8,13 @@ from ..db import get_db
 from ..models import AssetCreateResponse, ScanRequest, ScanResponse
 from ..services.audit_service import write_registration_audit
 from ..services.auth_service import CurrentUser, get_current_user
-from ..services.cloud_storage_service import upload_to_bucket
+from ..services.gcs_service import upload_to_gcs
 from ..services.demo_clip_service import create_demo_clips_for_asset, load_demo_clips
 from ..services.firebase_service import sync_asset_doc
 from ..services.gemini_service import analyze_registered_media, dumps_analysis
 from ..services.scan_service import run_scan
-from ..services.video_service import extract_keyframes, file_sha256, register_synthid_token, validate_and_save_upload
+from ..services.synthid_service import create_synthid_token
+from ..services.video_service import extract_keyframes, file_sha256, validate_and_save_upload
 from ..services.vision_ai_service import analyze_video_evidence, enrich_keyframes_with_vision_metadata
 from ..services.vision_product_service import registration_vision_plan
 
@@ -31,9 +32,9 @@ async def register_asset(
     filename, path, _size = await validate_and_save_upload(file)
     asset_id = uuid4().hex
     source_hash = file_sha256(path)
-    synthid_token = register_synthid_token(asset_id, source_hash)
     keyframes = extract_keyframes(path, asset_id)
-    upload = upload_to_bucket(path, f"sentinelai-assets/{user.uid}/{asset_id}{path.suffix}", file.content_type or "video/mp4")
+    synthid_token = json.dumps(create_synthid_token(asset_id, source_hash, [kf["dhash"] for kf in keyframes]))
+    upload = upload_to_gcs(path, f"sentinelai-assets/{user.uid}/{asset_id}{path.suffix}", file.content_type or "video/mp4")
     vision_evidence = analyze_video_evidence(path, upload["uri"], keyframes, title, sport)
     keyframes = enrich_keyframes_with_vision_metadata(keyframes, vision_evidence)
     analysis = analyze_registered_media(title, sport, keyframes, vision_evidence)

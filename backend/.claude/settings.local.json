@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(python:*)",
+      "Read(//c/Users/kingc/google/sentinelai//**)",
+      "Read(//mnt/c/Users/kingc/google/**)",
+      "PowerShell([System.IO.File]::Move\\(\"C:\\\\Users\\\\kingc\\\\google\\\\sentinelai\\\\frontend\\\\app\\\\violations\\\\[violationId]\\\\page.tsx\", \"C:\\\\Users\\\\kingc\\\\google\\\\sentinelai\\\\frontend\\\\app\\\\violations\\\\[violationId]\\\\ViolationPageClient.tsx\"\\))"
+    ]
+  }
+}

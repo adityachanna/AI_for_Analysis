@@ -3,8 +3,8 @@ import { Topbar } from "@/components/Topbar";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "SentinelAI",
-  description: "Rights protection MVP for sports media.",
+  title: "SentinelAI — Sports IP Protection at Machine Scale",
+  description: "AI-powered video rights protection. Detects pirated sports footage across platforms using Gemini, SynthID, and semantic fingerprinting — before it goes viral.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

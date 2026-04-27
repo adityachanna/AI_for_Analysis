@@ -1,10 +1,8 @@
 import io
 import logging
 from pathlib import Path
-from typing import BinaryIO
 
 from google.cloud import storage
-from google.cloud.storage.blob import Blob
 
 from ..config import settings
 
@@ -14,7 +12,6 @@ _client = None
 
 
 def get_gcs_client() -> storage.Client | None:
-    """Get authenticated GCS client."""
     global _client
     if _client is not None:
         return _client
@@ -34,7 +31,6 @@ def get_gcs_client() -> storage.Client | None:
 
 
 def upload_to_gcs(source: Path | str, destination: str, content_type: str = "video/mp4") -> dict:
-    """Upload file to Google Cloud Storage bucket."""
     if not settings.use_gcs:
         source_path = Path(source)
         return {
@@ -57,10 +53,9 @@ def upload_to_gcs(source: Path | str, destination: str, content_type: str = "vid
 
     try:
         bucket = client.bucket(settings.gcs_bucket_name)
-        blob: Blob = bucket.blob(destination)
-
-        if isinstance(source, str):
-            blob.upload_from_filename(source, content_type=content_type)
+        blob = bucket.blob(destination)
+        if isinstance(source, (str, Path)):
+            blob.upload_from_filename(str(source), content_type=content_type)
         else:
             blob.upload_from_file(source, content_type=content_type)
 
@@ -70,12 +65,12 @@ def upload_to_gcs(source: Path | str, destination: str, content_type: str = "vid
             "object": destination,
             "provider": "gcs",
             "size_bytes": blob.size,
-            "created": blob.time_created.isoformat() if blob.time_created else datetime.utcnow().isoformat(),
         }
     except Exception as e:
         logger.error(f"GCS upload failed: {e}")
+        source_path = Path(source)
         return {
-            "uri": f"local://{Path(source).as_posix()}",
+            "uri": f"local://{source_path.as_posix()}",
             "bucket": "local",
             "object": destination,
             "provider": "local-fallback",
@@ -84,7 +79,6 @@ def upload_to_gcs(source: Path | str, destination: str, content_type: str = "vid
 
 
 def upload_bytes_to_gcs(data: bytes, destination: str, content_type: str = "video/mp4") -> dict:
-    """Upload byte data directly to GCS."""
     if not settings.use_gcs:
         return {
             "uri": f"local://memory/{destination}",
@@ -104,7 +98,7 @@ def upload_bytes_to_gcs(data: bytes, destination: str, content_type: str = "vide
 
     try:
         bucket = client.bucket(settings.gcs_bucket_name)
-        blob: Blob = bucket.blob(destination)
+        blob = bucket.blob(destination)
         blob.upload_from_file(io.BytesIO(data), content_type=content_type)
         return {
             "uri": f"gs://{settings.gcs_bucket_name}/{destination}",
@@ -125,7 +119,7 @@ def upload_bytes_to_gcs(data: bytes, destination: str, content_type: str = "vide
 
 
 def download_from_gcs(gcs_uri: str, destination: Path | None = None) -> dict:
-    """Download file from GCS bucket."""
+    from datetime import datetime
     if gcs_uri.startswith("local://"):
         local_path = Path(gcs_uri.replace("local://", ""))
         if destination and local_path.exists():
@@ -163,7 +157,6 @@ def download_from_gcs(gcs_uri: str, destination: Path | None = None) -> dict:
 
 
 def list_bucket_contents(prefix: str = "", max_results: int = 100) -> list[dict]:
-    """List objects in GCS bucket."""
     client = get_gcs_client()
     if not client:
         return []
@@ -183,22 +176,3 @@ def list_bucket_contents(prefix: str = "", max_results: int = 100) -> list[dict]
     except Exception as e:
         logger.error(f"GCS list failed: {e}")
         return []
-
-
-def delete_from_gcs(object_name: str) -> dict:
-    """Delete object from GCS bucket."""
-    client = get_gcs_client()
-    if not client:
-        return {"status": "error", "error": "GCS client unavailable"}
-
-    try:
-        bucket = client.bucket(settings.gcs_bucket_name)
-        blob = bucket.blob(object_name)
-        blob.delete()
-        return {"status": "deleted", "object": object_name}
-    except Exception as e:
-        logger.error(f"GCS delete failed: {e}")
-        return {"status": "error", "error": str(e)}
-
-
-from datetime import datetime
